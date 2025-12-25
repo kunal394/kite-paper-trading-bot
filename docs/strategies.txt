@@ -1,0 +1,352 @@
+================================================================================
+                         TRADING STRATEGIES DOCUMENTATION
+================================================================================
+
+This document explains the trading strategies implemented in the paper trading
+bot. Each strategy includes theory, implementation details, and usage notes.
+
+================================================================================
+STRATEGY #1: SMA CROSSOVER
+================================================================================
+File: src/strategy/sma_crossover.py
+Status: IMPLEMENTED ✓
+
+--------------------------------------------------------------------------------
+1. WHAT IS A MOVING AVERAGE?
+--------------------------------------------------------------------------------
+
+A Moving Average (MA) is a statistical calculation that smooths out price data
+by creating a constantly updated average price. It helps filter out "noise"
+(random price fluctuations) and shows the underlying trend.
+
+Simple Example:
+
+Imagine NIFTY prices for 5 consecutive candles:
+    Day 1: 26000
+    Day 2: 26100
+    Day 3: 26050
+    Day 4: 26150
+    Day 5: 26200
+
+5-period SMA = (26000 + 26100 + 26050 + 26150 + 26200) ÷ 5 = 26100
+
+As new prices come in, the oldest price drops off and the newest is added -
+hence "moving" average.
+
+--------------------------------------------------------------------------------
+2. WHY USE TWO MOVING AVERAGES?
+--------------------------------------------------------------------------------
+
+Using a single MA only tells you the average - it doesn't tell you WHEN to
+trade. By using TWO MAs of different lengths, we can detect MOMENTUM SHIFTS:
+
+    MA Type     | Period  | What It Represents
+    ------------|---------|-----------------------------------
+    Fast SMA    | 5       | Recent price action (reactive)
+    Slow SMA    | 20      | Longer-term trend (stable)
+
+The Key Insight:
+- Fast SMA reacts quickly to price changes
+- Slow SMA reacts slowly (it's "lagging")
+- When prices are RISING, the fast SMA will be ABOVE the slow SMA
+- When prices are FALLING, the fast SMA will be BELOW the slow SMA
+
+--------------------------------------------------------------------------------
+3. THE CROSSOVER SIGNAL - VISUAL EXPLANATION
+--------------------------------------------------------------------------------
+
+Price Chart with SMAs:
+
+    26300 |                        ****  <- Price
+    26250 |                    ****      
+    26200 |                ****    ----  <- Fast SMA (5)
+    26150 |            ****    ----      
+    26100 |        ****    ----    ====  <- Slow SMA (20)
+    26050 |    ****    ----    ====      
+    26000 |****    ----    ====          
+          |----====----                  
+    25950 |====                          
+          +---------------------------------> Time
+              ^
+         CROSSOVER POINT (BUY Signal)
+         Fast SMA crosses ABOVE Slow SMA
+
+
+BUY Signal (Bullish Crossover):
+
+    Before:  Fast SMA < Slow SMA  (downtrend)
+    After:   Fast SMA > Slow SMA  (uptrend starting)
+             |
+             v
+          [BUY NOW!]
+
+
+SELL Signal (Bearish Crossover):
+
+    Before:  Fast SMA > Slow SMA  (uptrend)
+    After:   Fast SMA < Slow SMA  (downtrend starting)
+             |
+             v
+          [SELL NOW!]
+
+--------------------------------------------------------------------------------
+4. THE MATH BEHIND IT
+--------------------------------------------------------------------------------
+
+Code Implementation (from sma_crossover.py):
+
+    def sma_signal(df, fast=5, slow=20):
+        df = df.copy()
+        
+        # Calculate Fast SMA (5-period)
+        df["fast"] = df["close"].rolling(5).mean()
+        
+        # Calculate Slow SMA (20-period)  
+        df["slow"] = df["close"].rolling(20).mean()
+
+
+Example Calculation:
+
+Given last 20 closing prices:
+    [25800, 25820, 25850, 25870, 25900,   <- Oldest
+     25920, 25950, 25980, 26000, 26020,
+     26050, 26080, 26100, 26120, 26150,
+     26180, 26200, 26220, 26250, 26280]   <- Newest (current)
+
+Fast SMA (last 5):
+    = (26180 + 26200 + 26220 + 26250 + 26280) / 5
+    = 131130 / 5
+    = 26226
+
+Slow SMA (last 20):
+    = (25800 + 25820 + ... + 26280) / 20
+    = 520520 / 20
+    = 26026
+
+Signal Check:
+    - Current: Fast (26226) > Slow (26026) [YES]
+    - Previous: Fast (26166) > Slow (26002) [YES]
+    - No crossover happened -> HOLD
+
+--------------------------------------------------------------------------------
+5. CROSSOVER DETECTION LOGIC
+--------------------------------------------------------------------------------
+
+    # Current candle
+    fast_now = df["fast"].iloc[-1]   # 26226
+    slow_now = df["slow"].iloc[-1]   # 26026
+
+    # Previous candle  
+    fast_prev = df["fast"].iloc[-2]  # 26166
+    slow_prev = df["slow"].iloc[-2]  # 26050
+
+    # BUY: Fast just crossed ABOVE Slow
+    if fast_now > slow_now AND fast_prev <= slow_prev:
+        return "BUY"  # Bullish crossover!
+
+    # SELL: Fast just crossed BELOW Slow  
+    if fast_now < slow_now AND fast_prev >= slow_prev:
+        return "SELL"  # Bearish crossover!
+
+    return "HOLD"  # No crossover
+
+
+Why Check BOTH Current and Previous?
+
+We need TWO conditions to confirm a crossover:
+    1. Current state: Fast is now above/below Slow
+    2. Previous state: Fast was below/above Slow before
+
+This ensures we catch the EXACT MOMENT the lines cross, not just any time
+one is above the other.
+
+--------------------------------------------------------------------------------
+6. RISK MANAGEMENT: STOP-LOSS & TAKE-PROFIT
+--------------------------------------------------------------------------------
+
+The strategy includes automatic exit rules to protect capital:
+
+
+STOP-LOSS (2%):
+
+    Entry Price: Rs.26,000
+    Stop-Loss Threshold: Rs.26,000 x (1 - 0.02) = Rs.25,480
+
+    If price falls to Rs.25,480 or below:
+      -> AUTO-SELL to limit losses
+      -> Maximum loss: 2% of position
+
+    Why? Markets can crash. Without stop-loss, a single bad trade could
+    wipe out many winning trades.
+
+
+TAKE-PROFIT (4%):
+
+    Entry Price: Rs.26,000
+    Take-Profit Threshold: Rs.26,000 x (1 + 0.04) = Rs.27,040
+
+    If price rises to Rs.27,040 or above:
+      -> AUTO-SELL to lock in profits
+      -> Guaranteed profit: 4% of position
+
+    Why? Greed kills. The market often reverses. Taking profits at 4%
+    ensures you capture gains before a pullback.
+
+
+RISK-REWARD RATIO:
+
+    Risk (Stop-Loss):     2%
+    Reward (Take-Profit): 4%
+
+    Ratio = 4% / 2% = 2:1
+
+    This means: For every Rs.1 risked, potential gain is Rs.2
+    
+    With a 2:1 ratio, you only need to be right 33% of the time to break even!
+
+--------------------------------------------------------------------------------
+7. COMPLETE TRADE LIFECYCLE
+--------------------------------------------------------------------------------
+
+    +-------------------------------------------------------------+
+    |                     TRADE LIFECYCLE                         |
+    +-------------------------------------------------------------+
+    |                                                             |
+    |  1. SCAN FOR SIGNAL                                         |
+    |     |                                                       |
+    |     +-> Fast SMA crosses above Slow SMA?                    |
+    |     |       YES -> BUY 25 shares of NIFTY at Rs.26,000      |
+    |     |       NO  -> Continue scanning...                     |
+    |     |                                                       |
+    |  2. POSITION OPEN (Holding 25 NIFTY @ Rs.26,000)            |
+    |     |                                                       |
+    |     +-> Every candle, check:                                |
+    |     |                                                       |
+    |     |   Price <= Rs.25,480 (Stop-Loss)?                     |
+    |     |       YES -> SELL at Rs.25,480                        |
+    |     |             Loss: 25 x Rs.520 = -Rs.13,000            |
+    |     |                                                       |
+    |     |   Price >= Rs.27,040 (Take-Profit)?                   |
+    |     |       YES -> SELL at Rs.27,040                        |
+    |     |             Profit: 25 x Rs.1,040 = +Rs.26,000        |
+    |     |                                                       |
+    |     |   Fast SMA crosses below Slow SMA?                    |
+    |     |       YES -> SELL at current price                    |
+    |     |             (Signal-based exit)                       |
+    |     |                                                       |
+    |  3. POSITION CLOSED                                         |
+    |     |                                                       |
+    |     +-> Log trade to CSV                                    |
+    |         Update balance                                      |
+    |         Go back to Step 1                                   |
+    |                                                             |
+    +-------------------------------------------------------------+
+
+--------------------------------------------------------------------------------
+8. WHY 5 AND 20 PERIODS?
+--------------------------------------------------------------------------------
+
+These are CLASSIC VALUES used in trading:
+
+    Period Combo | Style       | Description
+    -------------|-------------|---------------------------------------------
+    5/20         | Short-term  | More signals, more trades, more noise
+    10/50        | Medium-term | Balanced approach
+    50/200       | Long-term   | Fewer signals, stronger trends (institutions)
+
+
+Trade-off:
+
+    Shorter periods (5/20):
+      [+] Catches trends early
+      [+] More trading opportunities
+      [-] More false signals (whipsaws)
+      [-] Higher transaction frequency
+
+    Longer periods (50/200):
+      [+] More reliable signals
+      [+] Catches major trends
+      [-] Late entries (misses initial move)
+      [-] Fewer opportunities
+
+--------------------------------------------------------------------------------
+9. STRATEGY STRENGTHS & WEAKNESSES
+--------------------------------------------------------------------------------
+
+STRENGTHS:
+
+    Advantage       | Explanation
+    ----------------|--------------------------------------------------
+    Simple          | Easy to understand and implement
+    Objective       | No emotions - rules are clear
+    Trend-following | Captures big moves in trending markets
+    Backtestable    | Can validate on historical data
+
+
+WEAKNESSES:
+
+    Disadvantage    | Explanation
+    ----------------|--------------------------------------------------
+    Lagging         | Signals come AFTER the move starts
+    Whipsaws        | False signals in sideways/choppy markets
+    No prediction   | Reacts to past, doesn't forecast
+    Single indicator| Doesn't consider volume, news, etc.
+
+
+When It Works Best:
+    - Trending markets (strong up or down moves)
+    - Volatile instruments (NIFTY, Bank NIFTY)
+    - Medium timeframes (5-min to daily)
+
+When It Fails:
+    - Sideways/ranging markets (price oscillates without direction)
+    - News events (sudden spikes that reverse quickly)
+    - Low volatility periods
+
+--------------------------------------------------------------------------------
+10. CONFIGURATION
+--------------------------------------------------------------------------------
+
+Parameters can be modified in:
+    - .env file (for stop-loss, take-profit percentages)
+    - sma_crossover.py (for SMA periods)
+
+Current Settings:
+    - Fast SMA Period: 5
+    - Slow SMA Period: 20
+    - Stop-Loss: 2%
+    - Take-Profit: 4%
+    - Quantity per trade: 25 shares
+    - Initial Balance: Rs.2,000,000
+
+--------------------------------------------------------------------------------
+11. USAGE
+--------------------------------------------------------------------------------
+
+Backtest Mode:
+    cd src
+    python main.py
+
+Live Paper Trading:
+    1. Edit .env: MODE=LIVE, DATA_SOURCE=FREE
+    2. cd src
+    3. python main.py
+    4. To stop: Create file "stop_bot" in project root
+
+--------------------------------------------------------------------------------
+
+
+================================================================================
+STRATEGY #2: [PLACEHOLDER - NOT YET IMPLEMENTED]
+================================================================================
+
+Ideas for future strategies:
+    - RSI (Relative Strength Index) Overbought/Oversold
+    - MACD (Moving Average Convergence Divergence)
+    - Bollinger Bands Breakout
+    - Volume-Weighted Average Price (VWAP)
+    - Mean Reversion Strategy
+
+================================================================================
+END OF DOCUMENT
+================================================================================

@@ -1,0 +1,9 @@
+python-dotenv==1.1.1
+pandas==2.1.1
+kiteconnect==3.14.0
+numpy>=1.24.0
+yfinance>=0.2.0
+
+# NSE Data Sources (optional - for fallback)
+nsetools>=1.0.11
+nsepy>=0.8
